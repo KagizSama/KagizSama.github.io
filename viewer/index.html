@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Annotation Viewer - Công cụ xem và kiểm tra chất lượng annotation</title>
+    <title>Professional Annotation Editor - Computer Vision Tool</title>
     <style>
         :root {
             --primary-color: #007AFF;
@@ -117,6 +117,14 @@
             transform: translateY(0);
         }
 
+        .upload-btn.edit-mode {
+            background: var(--error-color);
+        }
+
+        .upload-btn.edit-mode:hover {
+            background: #CC2E24;
+        }
+
         .file-input {
             display: none;
         }
@@ -193,6 +201,10 @@
 
         #imageCanvas:active {
             cursor: grabbing;
+        }
+
+        #imageCanvas.edit-mode {
+            cursor: crosshair;
         }
 
         .zoom-controls {
@@ -377,6 +389,15 @@
             to { transform: rotate(360deg); }
         }
 
+        /* Edit Mode Styles */
+        .control-point {
+            cursor: pointer;
+        }
+
+        .control-point:hover {
+            transform: scale(1.2);
+        }
+
         /* Responsive Design */
         @media (max-width: 1200px) {
             .viewer-container {
@@ -427,42 +448,54 @@
         <header class="header">
             <div class="header-content">
                 <div class="logo">
-                    <span>📊</span>
-                    <span>Annotation Viewer</span>
+                    <span>🎯</span>
+                    <span>Professional Annotation Editor</span>
                 </div>
                 
                 <div class="upload-section">
                     <div class="upload-group">
                         <label for="imageFolder" class="upload-btn">
-                            📁 Chọn folder ảnh
+                            📁 Select Image Folder
                         </label>
                         <input type="file" id="imageFolder" class="file-input" webkitdirectory multiple accept="image/*">
                     </div>
                     
                     <div class="upload-group">
                         <label for="labelFolder" class="upload-btn">
-                            🏷️ Chọn folder label
+                            🏷️ Select Label Folder
                         </label>
                         <input type="file" id="labelFolder" class="file-input" webkitdirectory multiple accept=".json">
+                    </div>
+                    
+                    <div class="upload-group">
+                        <button id="editModeBtn" class="upload-btn">
+                            ✏️ Edit Mode
+                        </button>
+                    </div>
+                    
+                    <div class="upload-group">
+                        <button id="exportBtn" class="upload-btn" disabled>
+                            💾 Export COCO JSON
+                        </button>
                     </div>
                 </div>
 
                 <div class="info-panel">
                     <div class="info-item">
-                        <span class="info-label">Ảnh hiện tại:</span>
+                        <span class="info-label">Current Image:</span>
                         <span id="currentIndex">0</span>
                     </div>
                     <div class="info-item">
-                        <span class="info-label">Tổng số ảnh:</span>
+                        <span class="info-label">Total Images:</span>
                         <span id="totalImages">0</span>
                     </div>
                     <div class="info-item">
-                        <span class="info-label">File label:</span>
+                        <span class="info-label">Label File:</span>
                         <span id="currentLabelFile">-</span>
                     </div>
                 </div>
 
-                <button class="theme-toggle" id="themeToggle" title="Chuyển đổi theme">
+                <button class="theme-toggle" id="themeToggle" title="Toggle theme">
                     🌙
                 </button>
             </div>
@@ -474,20 +507,20 @@
                 <div class="image-container">
                     <canvas id="imageCanvas"></canvas>
                     <div class="zoom-controls">
-                        <button id="zoomIn" class="zoom-btn" title="Phóng to">+</button>
-                        <button id="zoomOut" class="zoom-btn" title="Thu nhỏ">-</button>
-                        <button id="resetZoom" class="zoom-btn" title="Reset zoom">⌂</button>
+                        <button id="zoomIn" class="zoom-btn" title="Zoom In">+</button>
+                        <button id="zoomOut" class="zoom-btn" title="Zoom Out">-</button>
+                        <button id="resetZoom" class="zoom-btn" title="Reset Zoom">⌂</button>
                     </div>
                 </div>
                 
-                <!-- Panel hiển thị nội dung label -->
+                <!-- Label Content Panel -->
                 <div class="label-panel" id="labelPanel">
                     <div class="label-panel-header">
-                        <h3>Nội dung Label</h3>
+                        <h3>Annotation Data</h3>
                         <button id="toggleLabelPanel" class="toggle-btn">−</button>
                     </div>
                     <div class="label-content" id="labelContent">
-                        <pre id="labelText">Chưa có dữ liệu label</pre>
+                        <pre id="labelText">No annotation data loaded</pre>
                     </div>
                 </div>
             </div>
@@ -497,20 +530,20 @@
         <footer class="footer">
             <div class="footer-content">
                 <div class="progress-info" id="progressInfo">
-                    Chưa có dữ liệu
+                    No data loaded
                 </div>
                 
                 <div class="navigation">
                     <button id="prevBtn" class="nav-btn" disabled>
-                        ← Trước
+                        ← Previous
                     </button>
                     <button id="nextBtn" class="nav-btn" disabled>
-                        Tiếp →
+                        Next →
                     </button>
                 </div>
                 
                 <div class="keyboard-hint">
-                    Sử dụng ← → để điều hướng
+                    Use ← → keys to navigate
                 </div>
             </div>
         </footer>
@@ -520,39 +553,63 @@
     <div id="statusMessage" class="status-message"></div>
 
     <script>
-        // Quản lý state toàn cục của ứng dụng
+        // Global application state management
         class AppState {
             constructor() {
-                this.images = [];           // Danh sách file ảnh
-                this.labels = [];           // Danh sách file label
-                this.matchedPairs = [];     // Các cặp ảnh-label đã ghép nối
-                this.currentIndex = 0;      // Index ảnh hiện tại
+                this.images = [];           // Image file list
+                this.labels = [];           // Label file list
+                this.matchedPairs = [];     // Matched image-label pairs
+                this.currentIndex = 0;      // Current image index
                 this.canvas = null;         // Canvas element
                 this.ctx = null;            // Canvas context
-                this.currentImage = null;   // Image object hiện tại
-                this.zoomLevel = 1;         // Mức zoom hiện tại
-                this.panX = 0;              // Vị trí pan X
-                this.panY = 0;              // Vị trí pan Y
-                this.isDragging = false;    // Trạng thái kéo thả
-                this.lastMouseX = 0;        // Vị trí chuột cuối
-                this.lastMouseY = 0;        // Vị trí chuột cuối
-                this.preloadedImages = new Map(); // Cache ảnh đã preload
+                this.currentImage = null;   // Current image object
+                this.zoomLevel = 1;         // Current zoom level
+                this.panX = 0;              // Pan X position
+                this.panY = 0;              // Pan Y position
+                this.isDragging = false;    // Dragging state
+                this.lastMouseX = 0;        // Last mouse X position
+                this.lastMouseY = 0;        // Last mouse Y position
+                this.preloadedImages = new Map(); // Preloaded image cache
+                this.isEditMode = false;    // Edit mode state
+                this.selectedPolygon = null; // Currently selected polygon
+                this.selectedVertex = null;  // Currently selected vertex
+                this.modifiedData = null;   // Modified annotation data
+                this.originalData = null;   // Original annotation data backup
+                this.isDraggingVertex = false; // Vertex dragging state
             }
         }
 
-        // Khởi tạo state và các elements
+        // Initialize state and DOM elements
         const state = new AppState();
         let elements = {};
 
-        // Màu sắc cho các category khác nhau
-        const CATEGORY_COLORS = [
-            '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
-            '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'
+        // High-contrast colors for polygon visualization - REMOVED BOUNDING BOX COLORS
+        const POLYGON_COLORS = [
+            '#FF3B30', // Red
+            '#007AFF', // Blue  
+            '#34C759', // Green
+            '#FF9500', // Orange
+            '#5856D6', // Purple
+            '#FF2D92', // Pink
+            '#00C7BE', // Teal
+            '#FFD60A', // Yellow
+            '#BF5AF2', // Violet
+            '#32D74B', // Lime
+            '#FF6B35', // Orange Red
+            '#5E5CE6', // Indigo
+            '#30D158', // Light Green
+            '#FF375F', // Rose
+            '#64D2FF', // Light Blue
+            '#BF5AF2', // Magenta
+            '#FFCC02', // Amber
+            '#FF9F0A', // Dark Orange
+            '#AC8E68', // Brown
+            '#8E8E93'  // Gray
         ];
 
-        // Khởi tạo ứng dụng
+        // Initialize application
         function initApp() {
-            // Lấy references đến các DOM elements
+            // Get DOM element references
             elements = {
                 imageFolder: document.getElementById('imageFolder'),
                 labelFolder: document.getElementById('labelFolder'),
@@ -569,23 +626,31 @@
                 themeToggle: document.getElementById('themeToggle'),
                 labelText: document.getElementById('labelText'),
                 toggleLabelPanel: document.getElementById('toggleLabelPanel'),
-                statusMessage: document.getElementById('statusMessage')
+                statusMessage: document.getElementById('statusMessage'),
+                editModeBtn: document.getElementById('editModeBtn'),
+                exportBtn: document.getElementById('exportBtn')
             };
 
-            // Khởi tạo canvas
+            // Initialize canvas
             state.canvas = elements.canvas;
             state.ctx = state.canvas.getContext('2d');
 
             // Bind event listeners
             bindEventListeners();
 
-            // Khởi tạo theme
+            // Initialize theme
             initTheme();
 
-            showStatus('Ứng dụng đã sẵn sàng. Hãy chọn folder ảnh và label để bắt đầu.', 'success');
+            showStatus('Application ready. Please select image and label folders to begin.', 'success');
+            
+            // Reset edit mode on initialization
+            state.isEditMode = false;
+            state.selectedPolygon = null;
+            state.selectedVertex = null;
+            updateEditModeUI();
         }
 
-        // Bind tất cả event listeners
+        // Bind all event listeners
         function bindEventListeners() {
             // File upload events
             elements.imageFolder.addEventListener('change', handleImageFolderUpload);
@@ -603,7 +668,7 @@
             elements.zoomOut.addEventListener('click', () => zoomImage(0.8));
             elements.resetZoom.addEventListener('click', resetZoom);
 
-            // Canvas mouse events cho pan và zoom
+            // Canvas mouse events for pan, zoom, and editing
             elements.canvas.addEventListener('wheel', handleMouseWheel);
             elements.canvas.addEventListener('mousedown', handleMouseDown);
             elements.canvas.addEventListener('mousemove', handleMouseMove);
@@ -615,9 +680,16 @@
 
             // Label panel toggle
             elements.toggleLabelPanel.addEventListener('click', toggleLabelPanel);
+
+            // Edit mode and export
+            elements.editModeBtn.addEventListener('click', toggleEditMode);
+            elements.exportBtn.addEventListener('click', exportCOCOJSON);
+
+            // Canvas click for edit mode
+            elements.canvas.addEventListener('click', handleCanvasClick);
         }
 
-        // Xử lý upload folder ảnh
+        // Handle image folder upload
         async function handleImageFolderUpload(event) {
             const files = Array.from(event.target.files);
             const imageFiles = files.filter(file => 
@@ -625,22 +697,22 @@
             );
 
             if (imageFiles.length === 0) {
-                showStatus('Không tìm thấy file ảnh hợp lệ (JPG, PNG, JPEG)', 'error');
+                showStatus('No valid image files found (JPG, PNG, JPEG)', 'error');
                 return;
             }
 
             state.images = imageFiles;
             elements.totalImages.textContent = imageFiles.length;
             
-            showStatus(`Đã tải ${imageFiles.length} ảnh thành công`, 'success');
+            showStatus(`Successfully loaded ${imageFiles.length} images`, 'success');
             
-            // Tự động ghép nối nếu đã có labels
+            // Auto-match if labels are already loaded
             if (state.labels.length > 0) {
                 await matchImagesWithLabels();
             }
         }
 
-        // Xử lý upload folder label
+        // Handle label folder upload
         async function handleLabelFolderUpload(event) {
             const files = Array.from(event.target.files);
             const labelFiles = files.filter(file => 
@@ -648,28 +720,28 @@
             );
 
             if (labelFiles.length === 0) {
-                showStatus('Không tìm thấy file JSON hợp lệ', 'error');
+                showStatus('No valid JSON files found', 'error');
                 return;
             }
 
             state.labels = labelFiles;
             
-            showStatus(`Đã tải ${labelFiles.length} file label thành công`, 'success');
+            showStatus(`Successfully loaded ${labelFiles.length} label files`, 'success');
             
-            // Tự động ghép nối nếu đã có images
+            // Auto-match if images are already loaded
             if (state.images.length > 0) {
                 await matchImagesWithLabels();
             }
         }
 
-        // Ghép nối ảnh với label dựa trên tên file
+        // Match images with labels based on filename
         async function matchImagesWithLabels() {
             state.matchedPairs = [];
             
             for (const imageFile of state.images) {
                 const imageName = getFileNameWithoutExtension(imageFile.name);
                 
-                // Tìm label file tương ứng
+                // Find corresponding label file
                 const labelFile = state.labels.find(label => {
                     const labelName = getFileNameWithoutExtension(label.name);
                     return labelName.includes(imageName) || imageName.includes(labelName);
@@ -683,12 +755,12 @@
                         labelName: labelFile.name
                     });
                 } else {
-                    // Thêm ảnh không có label
+                    // Add image without label
                     state.matchedPairs.push({
                         image: imageFile,
                         label: null,
                         imageName: imageFile.name,
-                        labelName: 'Không có label'
+                        labelName: 'No label'
                     });
                 }
             }
@@ -699,60 +771,71 @@
                 updateNavigationButtons();
                 await showCurrentImage();
                 
-                showStatus(`Đã ghép nối ${state.matchedPairs.length} cặp ảnh-label`, 'success');
+                showStatus(`Successfully matched ${state.matchedPairs.length} image-label pairs`, 'success');
             } else {
-                showStatus('Không thể ghép nối ảnh với label', 'error');
+                showStatus('Unable to match images with labels', 'error');
             }
         }
 
-        // Lấy tên file không có extension
+        // Get filename without extension
         function getFileNameWithoutExtension(filename) {
             return filename.replace(/\.[^/.]+$/, '');
         }
 
-        // Hiển thị ảnh hiện tại với annotation
+        // Display current image with annotations
         async function showCurrentImage() {
             if (state.matchedPairs.length === 0) return;
 
             const currentPair = state.matchedPairs[state.currentIndex];
             
-            // Cập nhật UI info
+            // Update UI info
             elements.currentIndex.textContent = state.currentIndex + 1;
             elements.currentLabelFile.textContent = currentPair.labelName;
             elements.progressInfo.textContent = 
-                `Ảnh ${state.currentIndex + 1}/${state.matchedPairs.length} - ${currentPair.imageName}`;
+                `Image ${state.currentIndex + 1}/${state.matchedPairs.length} - ${currentPair.imageName}`;
 
             try {
-                // Load ảnh
+                // Load image
                 const imageUrl = URL.createObjectURL(currentPair.image);
                 const image = await loadImage(imageUrl);
                 state.currentImage = image;
 
-                // Vẽ ảnh lên canvas
+                // Draw image on canvas
                 drawImageOnCanvas(image);
 
-                // Load và vẽ annotation nếu có
+                // Load and draw annotations if available
                 if (currentPair.label) {
                     const labelData = await loadLabelFile(currentPair.label);
-                    displayLabelContent(labelData);
-                    drawAnnotations(labelData, image.width, image.height);
+                    // Store original data backup
+                    state.originalData = JSON.parse(JSON.stringify(labelData));
+                    // Create modifiable copy if not exists
+                    if (!state.modifiedData) {
+                        state.modifiedData = JSON.parse(JSON.stringify(labelData));
+                    }
+                    displayLabelContent(state.modifiedData || labelData);
+                    drawAnnotations(state.modifiedData || labelData, image.width, image.height);
                 } else {
-                    elements.labelText.textContent = 'Không có file label cho ảnh này';
+                    elements.labelText.textContent = 'No label file for this image';
+                    state.originalData = null;
+                    state.modifiedData = null;
                 }
 
-                // Preload ảnh tiếp theo
+                // Preload next image
                 preloadNextImage();
 
                 // Cleanup URL
                 URL.revokeObjectURL(imageUrl);
 
+                // Update export button state
+                updateExportButtonState();
+
             } catch (error) {
-                console.error('Lỗi khi hiển thị ảnh:', error);
-                showStatus('Lỗi khi hiển thị ảnh: ' + error.message, 'error');
+                console.error('Error displaying image:', error);
+                showStatus('Error displaying image: ' + error.message, 'error');
             }
         }
 
-        // Load image từ URL
+        // Load image from URL
         function loadImage(url) {
             return new Promise((resolve, reject) => {
                 const img = new Image();
@@ -762,9 +845,9 @@
             });
         }
 
-        // Vẽ ảnh lên canvas
+        // Draw image on canvas
         function drawImageOnCanvas(image) {
-            // Tính toán kích thước canvas phù hợp
+            // Calculate appropriate canvas size
             const containerWidth = state.canvas.parentElement.clientWidth - 40;
             const containerHeight = state.canvas.parentElement.clientHeight - 40;
             
@@ -776,17 +859,17 @@
             state.canvas.width = image.width * scale;
             state.canvas.height = image.height * scale;
 
-            // Reset zoom và pan
+            // Reset zoom and pan
             state.zoomLevel = 1;
             state.panX = 0;
             state.panY = 0;
 
-            // Vẽ ảnh
+            // Draw image
             state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
             state.ctx.drawImage(image, 0, 0, state.canvas.width, state.canvas.height);
         }
 
-        // Load file label JSON
+        // Load label JSON file
         async function loadLabelFile(labelFile) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -795,7 +878,7 @@
                         const data = JSON.parse(e.target.result);
                         resolve(data);
                     } catch (error) {
-                        reject(new Error('File JSON không hợp lệ: ' + error.message));
+                        reject(new Error('Invalid JSON file: ' + error.message));
                     }
                 };
                 reader.onerror = reject;
@@ -803,106 +886,130 @@
             });
         }
 
-        // Hiển thị nội dung label trong panel
+        // Display label content in panel
         function displayLabelContent(labelData) {
             elements.labelText.textContent = JSON.stringify(labelData, null, 2);
         }
 
-        // Vẽ annotations lên canvas
+        // Draw annotations on canvas - REMOVED BOUNDING BOX FUNCTIONALITY
         function drawAnnotations(labelData, originalWidth, originalHeight) {
             const scaleX = state.canvas.width / originalWidth;
             const scaleY = state.canvas.height / originalHeight;
 
-            // Xử lý COCO format
+            // Handle COCO format - ONLY POLYGONS, NO BOUNDING BOXES
             if (labelData.annotations && Array.isArray(labelData.annotations)) {
                 drawCocoAnnotations(labelData.annotations, scaleX, scaleY);
             }
-            // Xử lý LabelMe format
+            // Handle LabelMe format
             else if (labelData.shapes && Array.isArray(labelData.shapes)) {
                 drawLabelMeAnnotations(labelData.shapes, scaleX, scaleY);
             }
             else {
-                console.warn('Format annotation không được hỗ trợ');
+                console.warn('Unsupported annotation format');
             }
         }
 
-        // Vẽ COCO annotations
+        // Draw COCO annotations - MULTI-COLORED POLYGONS ONLY
         function drawCocoAnnotations(annotations, scaleX, scaleY) {
             annotations.forEach((annotation, index) => {
-                const categoryId = annotation.category_id || 0;
-                const color = CATEGORY_COLORS[categoryId % CATEGORY_COLORS.length];
+                // Use index for color cycling to ensure distinct colors
+                const color = POLYGON_COLORS[index % POLYGON_COLORS.length];
+                
+                // Check if this polygon is selected
+                const isSelected = state.selectedPolygon && 
+                    state.selectedPolygon.annotationIndex === index;
+                const polygonColor = isSelected ? '#FFFFFF' : color;
 
-                // Vẽ segmentation polygons
+                // Draw segmentation polygons ONLY - NO BOUNDING BOXES
                 if (annotation.segmentation && Array.isArray(annotation.segmentation)) {
-                    annotation.segmentation.forEach(segmentation => {
+                    annotation.segmentation.forEach((segmentation, segIndex) => {
                         if (Array.isArray(segmentation) && segmentation.length >= 6) {
-                            drawPolygon(segmentation, scaleX, scaleY, color);
+                            drawPolygon(segmentation, scaleX, scaleY, polygonColor, isSelected, index, segIndex);
                         }
                     });
-                }
-
-                // Vẽ bounding box
-                if (annotation.bbox && Array.isArray(annotation.bbox) && annotation.bbox.length === 4) {
-                    const [x, y, width, height] = annotation.bbox;
-                    drawBoundingBox(x * scaleX, y * scaleY, width * scaleX, height * scaleY, color);
                 }
             });
         }
 
-        // Vẽ LabelMe annotations
+        // Draw LabelMe annotations - MULTI-COLORED POLYGONS
         function drawLabelMeAnnotations(shapes, scaleX, scaleY) {
             shapes.forEach((shape, index) => {
-                const color = CATEGORY_COLORS[index % CATEGORY_COLORS.length];
+                // Use index for color cycling
+                const color = POLYGON_COLORS[index % POLYGON_COLORS.length];
+                
+                // Check if this polygon is selected
+                const isSelected = state.selectedPolygon && 
+                    state.selectedPolygon.shapeIndex === index;
+                const polygonColor = isSelected ? '#FFFFFF' : color;
 
                 if (shape.shape_type === 'polygon' && shape.points && Array.isArray(shape.points)) {
-                    // Convert points format từ [[x1,y1], [x2,y2]] sang [x1,y1,x2,y2]
+                    // Convert points format from [[x1,y1], [x2,y2]] to [x1,y1,x2,y2]
                     const flatPoints = shape.points.flat();
                     if (flatPoints.length >= 6) {
-                        drawPolygon(flatPoints, scaleX, scaleY, color);
+                        drawPolygon(flatPoints, scaleX, scaleY, polygonColor, isSelected, index);
                     }
                 }
             });
         }
 
-        // Vẽ polygon với độ trong suốt 30%
-        function drawPolygon(points, scaleX, scaleY, color) {
-            if (points.length < 6) return; // Cần ít nhất 3 điểm (6 coordinates)
+        // Draw polygon with 30% transparency fill - ENHANCED FOR EDITING
+        function drawPolygon(points, scaleX, scaleY, color, isSelected = false, annotationIndex = -1, segmentationIndex = 0) {
+            if (points.length < 6) return; // Need at least 3 points (6 coordinates)
 
             state.ctx.save();
 
-            // Vẽ fill với độ trong suốt 30%
+            // Draw fill with 30% transparency as specified
             state.ctx.fillStyle = color + '4D'; // 30% opacity (4D = 77 in decimal = 30% of 255)
-            state.ctx.strokeStyle = color + 'CC'; // 80% opacity cho border
-            state.ctx.lineWidth = 2;
+            state.ctx.strokeStyle = isSelected ? '#FFFFFF' : color;
+            state.ctx.lineWidth = isSelected ? 3 : 2;
 
             state.ctx.beginPath();
             
-            // Di chuyển đến điểm đầu tiên
+            // Move to first point
             state.ctx.moveTo(points[0] * scaleX, points[1] * scaleY);
             
-            // Vẽ các điểm tiếp theo
+            // Draw to subsequent points
             for (let i = 2; i < points.length; i += 2) {
                 state.ctx.lineTo(points[i] * scaleX, points[i + 1] * scaleY);
             }
             
             state.ctx.closePath();
             
-            // Fill và stroke
+            // Fill and stroke
             state.ctx.fill();
             state.ctx.stroke();
+            
+            // Draw control points if selected and in edit mode
+            if (isSelected && state.isEditMode) {
+                drawControlPoints(points, scaleX, scaleY, annotationIndex, segmentationIndex);
+            }
 
             state.ctx.restore();
         }
 
-        // Vẽ bounding box
-        function drawBoundingBox(x, y, width, height, color) {
+        // Draw control points for selected polygon - ENHANCED FOR VERTEX EDITING
+        function drawControlPoints(points, scaleX, scaleY, annotationIndex, segmentationIndex = 0) {
             state.ctx.save();
             
-            state.ctx.strokeStyle = color + 'CC'; // 80% opacity
-            state.ctx.lineWidth = 2;
-            state.ctx.setLineDash([5, 5]); // Dashed line
-            
-            state.ctx.strokeRect(x, y, width, height);
+            for (let i = 0; i < points.length; i += 2) {
+                const x = points[i] * scaleX;
+                const y = points[i + 1] * scaleY;
+                
+                // Check if this vertex is selected
+                const isVertexSelected = state.selectedVertex && 
+                    state.selectedVertex.annotationIndex === annotationIndex &&
+                    state.selectedVertex.segmentationIndex === segmentationIndex &&
+                    state.selectedVertex.vertexIndex === i / 2;
+                
+                state.ctx.fillStyle = isVertexSelected ? '#FF3B30' : '#FFFFFF';
+                state.ctx.strokeStyle = '#000000';
+                state.ctx.lineWidth = 2;
+                
+                state.ctx.beginPath();
+                state.ctx.arc(x, y, isVertexSelected ? 6 : 4, 0, 2 * Math.PI);
+                state.ctx.fill();
+                state.ctx.stroke();
+            }
             
             state.ctx.restore();
         }
@@ -911,6 +1018,11 @@
         function showPreviousImage() {
             if (state.matchedPairs.length === 0) return;
             
+            // Reset edit state when changing images
+            state.selectedPolygon = null;
+            state.selectedVertex = null;
+            state.modifiedData = null;
+            
             state.currentIndex = (state.currentIndex - 1 + state.matchedPairs.length) % state.matchedPairs.length;
             showCurrentImage();
         }
@@ -918,18 +1030,23 @@
         function showNextImage() {
             if (state.matchedPairs.length === 0) return;
             
+            // Reset edit state when changing images
+            state.selectedPolygon = null;
+            state.selectedVertex = null;
+            state.modifiedData = null;
+            
             state.currentIndex = (state.currentIndex + 1) % state.matchedPairs.length;
             showCurrentImage();
         }
 
-        // Cập nhật trạng thái navigation buttons
+        // Update navigation button states
         function updateNavigationButtons() {
             const hasData = state.matchedPairs.length > 0;
             elements.prevBtn.disabled = !hasData;
             elements.nextBtn.disabled = !hasData;
         }
 
-        // Xử lý keyboard navigation
+        // Handle keyboard navigation
         function handleKeyboardNavigation(event) {
             if (state.matchedPairs.length === 0) return;
 
@@ -941,6 +1058,13 @@
                 case 'ArrowRight':
                     event.preventDefault();
                     showNextImage();
+                    break;
+                case 'Escape':
+                    if (state.isEditMode) {
+                        state.selectedPolygon = null;
+                        state.selectedVertex = null;
+                        showCurrentImage();
+                    }
                     break;
             }
         }
@@ -964,7 +1088,7 @@
                 `scale(${state.zoomLevel}) translate(${state.panX}px, ${state.panY}px)`;
         }
 
-        // Mouse event handlers
+        // Mouse event handlers - ENHANCED FOR POLYGON EDITING
         function handleMouseWheel(event) {
             event.preventDefault();
             const factor = event.deltaY > 0 ? 0.9 : 1.1;
@@ -972,6 +1096,22 @@
         }
 
         function handleMouseDown(event) {
+            if (state.isEditMode) {
+                const rect = state.canvas.getBoundingClientRect();
+                const x = (event.clientX - rect.left) / state.zoomLevel - state.panX;
+                const y = (event.clientY - rect.top) / state.zoomLevel - state.panY;
+                
+                // Check if clicking on a vertex
+                const vertex = findVertexAtPoint(x, y);
+                if (vertex) {
+                    state.selectedVertex = vertex;
+                    state.isDraggingVertex = true;
+                    showCurrentImage(); // Redraw to show selected vertex
+                    return;
+                }
+            }
+            
+            // Default pan behavior
             state.isDragging = true;
             state.lastMouseX = event.clientX;
             state.lastMouseY = event.clientY;
@@ -979,6 +1119,17 @@
         }
 
         function handleMouseMove(event) {
+            if (state.isDraggingVertex && state.selectedVertex) {
+                // Move vertex
+                const rect = state.canvas.getBoundingClientRect();
+                const x = (event.clientX - rect.left) / state.zoomLevel - state.panX;
+                const y = (event.clientY - rect.top) / state.zoomLevel - state.panY;
+                
+                moveVertex(state.selectedVertex, x, y);
+                showCurrentImage(); // Redraw with updated vertex position
+                return;
+            }
+            
             if (!state.isDragging) return;
 
             const deltaX = event.clientX - state.lastMouseX;
@@ -995,10 +1146,99 @@
 
         function handleMouseUp() {
             state.isDragging = false;
-            state.canvas.style.cursor = 'grab';
+            state.isDraggingVertex = false;
+            state.canvas.style.cursor = state.isEditMode ? 'crosshair' : 'grab';
         }
 
-        // Preload ảnh tiếp theo để tăng performance
+        // Find vertex at point - FOR VERTEX EDITING
+        function findVertexAtPoint(x, y) {
+            if (!state.modifiedData || !state.selectedPolygon) return null;
+            
+            const scaleX = state.canvas.width / state.currentImage.width;
+            const scaleY = state.canvas.height / state.currentImage.height;
+            const tolerance = 8; // Pixel tolerance for vertex selection
+            
+            // Handle COCO format
+            if (state.modifiedData.annotations && state.selectedPolygon.annotationIndex !== undefined) {
+                const annotation = state.modifiedData.annotations[state.selectedPolygon.annotationIndex];
+                if (annotation.segmentation) {
+                    for (let segIndex = 0; segIndex < annotation.segmentation.length; segIndex++) {
+                        const segmentation = annotation.segmentation[segIndex];
+                        for (let i = 0; i < segmentation.length; i += 2) {
+                            const vx = segmentation[i] * scaleX;
+                            const vy = segmentation[i + 1] * scaleY;
+                            const distance = Math.sqrt((x - vx) ** 2 + (y - vy) ** 2);
+                            
+                            if (distance <= tolerance) {
+                                return {
+                                    annotationIndex: state.selectedPolygon.annotationIndex,
+                                    segmentationIndex: segIndex,
+                                    vertexIndex: i / 2,
+                                    pointIndex: i
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Handle LabelMe format
+            if (state.modifiedData.shapes && state.selectedPolygon.shapeIndex !== undefined) {
+                const shape = state.modifiedData.shapes[state.selectedPolygon.shapeIndex];
+                if (shape.points) {
+                    for (let i = 0; i < shape.points.length; i++) {
+                        const vx = shape.points[i][0] * scaleX;
+                        const vy = shape.points[i][1] * scaleY;
+                        const distance = Math.sqrt((x - vx) ** 2 + (y - vy) ** 2);
+                        
+                        if (distance <= tolerance) {
+                            return {
+                                shapeIndex: state.selectedPolygon.shapeIndex,
+                                vertexIndex: i
+                            };
+                        }
+                    }
+                }
+            }
+            
+            return null;
+        }
+
+        // Move vertex to new position - CORE EDITING FUNCTIONALITY
+        function moveVertex(vertex, newX, newY) {
+            if (!state.modifiedData) return;
+            
+            const scaleX = state.canvas.width / state.currentImage.width;
+            const scaleY = state.canvas.height / state.currentImage.height;
+            
+            // Convert screen coordinates back to image coordinates
+            const imageX = newX / scaleX;
+            const imageY = newY / scaleY;
+            
+            // Handle COCO format
+            if (vertex.annotationIndex !== undefined) {
+                const annotation = state.modifiedData.annotations[vertex.annotationIndex];
+                if (annotation.segmentation && annotation.segmentation[vertex.segmentationIndex]) {
+                    annotation.segmentation[vertex.segmentationIndex][vertex.pointIndex] = imageX;
+                    annotation.segmentation[vertex.segmentationIndex][vertex.pointIndex + 1] = imageY;
+                }
+            }
+            
+            // Handle LabelMe format
+            if (vertex.shapeIndex !== undefined) {
+                const shape = state.modifiedData.shapes[vertex.shapeIndex];
+                if (shape.points && shape.points[vertex.vertexIndex]) {
+                    shape.points[vertex.vertexIndex][0] = imageX;
+                    shape.points[vertex.vertexIndex][1] = imageY;
+                }
+            }
+            
+            // Update label display
+            displayLabelContent(state.modifiedData);
+            updateExportButtonState();
+        }
+
+        // Preload next image for performance
         function preloadNextImage() {
             if (state.matchedPairs.length === 0) return;
 
@@ -1016,7 +1256,7 @@
 
         // Theme management
         function initTheme() {
-            const savedTheme = localStorage.getItem('annotation-viewer-theme') || 'light';
+            const savedTheme = localStorage.getItem('annotation-editor-theme') || 'light';
             document.documentElement.setAttribute('data-theme', savedTheme);
             updateThemeIcon(savedTheme);
         }
@@ -1026,7 +1266,7 @@
             const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
             
             document.documentElement.setAttribute('data-theme', newTheme);
-            localStorage.setItem('annotation-viewer-theme', newTheme);
+            localStorage.setItem('annotation-editor-theme', newTheme);
             updateThemeIcon(newTheme);
         }
 
@@ -1063,7 +1303,260 @@
             }, 3000);
         }
 
-        // Khởi tạo ứng dụng khi DOM loaded
+        // Toggle edit mode - ENHANCED FOR POLYGON EDITING
+        function toggleEditMode() {
+            state.isEditMode = !state.isEditMode;
+            state.selectedPolygon = null;
+            state.selectedVertex = null;
+            updateEditModeUI();
+            
+            // Update canvas cursor
+            state.canvas.style.cursor = state.isEditMode ? 'crosshair' : 'grab';
+            
+            // Redraw to update UI
+            if (state.currentImage && state.matchedPairs.length > 0) {
+                showCurrentImage();
+            }
+        }
+        
+        // Update UI for edit mode
+        function updateEditModeUI() {
+            if (state.isEditMode) {
+                elements.editModeBtn.textContent = '✏️ Exit Edit Mode';
+                elements.editModeBtn.classList.add('edit-mode');
+                elements.canvas.classList.add('edit-mode');
+            } else {
+                elements.editModeBtn.textContent = '✏️ Edit Mode';
+                elements.editModeBtn.classList.remove('edit-mode');
+                elements.canvas.classList.remove('edit-mode');
+            }
+            
+            updateExportButtonState();
+        }
+        
+        // Update export button state
+        function updateExportButtonState() {
+            elements.exportBtn.disabled = !state.modifiedData || !state.isEditMode;
+        }
+        
+        // Handle canvas click - ENHANCED FOR POLYGON SELECTION
+        function handleCanvasClick(event) {
+            if (!state.isEditMode || state.matchedPairs.length === 0) return;
+            
+            const rect = state.canvas.getBoundingClientRect();
+            const x = (event.clientX - rect.left) / state.zoomLevel - state.panX;
+            const y = (event.clientY - rect.top) / state.zoomLevel - state.panY;
+            
+            // Find polygon at click point
+            const clickedPolygon = findPolygonAtPoint(x, y);
+            
+            if (clickedPolygon) {
+                state.selectedPolygon = clickedPolygon;
+                state.selectedVertex = null; // Reset vertex selection
+                showCurrentImage(); // Redraw to show selection
+                showStatus(`Selected polygon ${clickedPolygon.annotationIndex !== undefined ? clickedPolygon.annotationIndex : clickedPolygon.shapeIndex}`, 'success');
+            } else {
+                state.selectedPolygon = null;
+                state.selectedVertex = null;
+                showCurrentImage(); // Redraw to clear selection
+            }
+        }
+        
+        // Find polygon at point - ENHANCED FOR ACCURATE SELECTION
+        function findPolygonAtPoint(x, y) {
+            if (!state.modifiedData) return null;
+            
+            const scaleX = state.canvas.width / state.currentImage.width;
+            const scaleY = state.canvas.height / state.currentImage.height;
+            
+            // Check COCO format
+            if (state.modifiedData.annotations && Array.isArray(state.modifiedData.annotations)) {
+                for (let i = state.modifiedData.annotations.length - 1; i >= 0; i--) {
+                    const annotation = state.modifiedData.annotations[i];
+                    if (annotation.segmentation && Array.isArray(annotation.segmentation)) {
+                        for (let segIndex = 0; segIndex < annotation.segmentation.length; segIndex++) {
+                            const segmentation = annotation.segmentation[segIndex];
+                            if (isPointInPolygon(x, y, segmentation, scaleX, scaleY)) {
+                                return { annotationIndex: i, segmentationIndex: segIndex };
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Check LabelMe format
+            if (state.modifiedData.shapes && Array.isArray(state.modifiedData.shapes)) {
+                for (let i = state.modifiedData.shapes.length - 1; i >= 0; i--) {
+                    const shape = state.modifiedData.shapes[i];
+                    if (shape.shape_type === 'polygon' && shape.points) {
+                        const flatPoints = shape.points.flat();
+                        if (isPointInPolygon(x, y, flatPoints, scaleX, scaleY)) {
+                            return { shapeIndex: i };
+                        }
+                    }
+                }
+            }
+            
+            return null;
+        }
+        
+        // Check if point is inside polygon (Ray casting algorithm)
+        function isPointInPolygon(x, y, points, scaleX, scaleY) {
+            let inside = false;
+            const n = points.length / 2;
+            
+            for (let i = 0, j = n - 1; i < n; j = i++) {
+                const xi = points[i * 2] * scaleX;
+                const yi = points[i * 2 + 1] * scaleY;
+                const xj = points[j * 2] * scaleX;
+                const yj = points[j * 2 + 1] * scaleY;
+                
+                if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+                    inside = !inside;
+                }
+            }
+            
+            return inside;
+        }
+        
+        // Export COCO JSON - COMPLETE IMPLEMENTATION
+        function exportCOCOJSON() {
+            if (!state.modifiedData || state.matchedPairs.length === 0) {
+                showStatus('No modified data to export', 'error');
+                return;
+            }
+            
+            try {
+                // Ensure proper COCO format structure
+                const cocoData = ensureCOCOFormat(state.modifiedData);
+                
+                const currentPair = state.matchedPairs[state.currentIndex];
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const filename = `modified_${getFileNameWithoutExtension(currentPair.labelName)}_${timestamp}.json`;
+                
+                const blob = new Blob([JSON.stringify(cocoData, null, 2)], {
+                    type: 'application/json'
+                });
+                
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                showStatus(`Successfully exported: ${filename}`, 'success');
+                
+            } catch (error) {
+                console.error('Export error:', error);
+                showStatus('Error exporting COCO JSON: ' + error.message, 'error');
+            }
+        }
+        
+        // Ensure proper COCO format structure
+        function ensureCOCOFormat(data) {
+            // If already in COCO format, return as-is
+            if (data.images && data.annotations && data.categories) {
+                return data;
+            }
+            
+            // Convert from other formats to COCO
+            const cocoData = {
+                info: {
+                    description: "Exported from Professional Annotation Editor",
+                    version: "1.0",
+                    year: new Date().getFullYear(),
+                    contributor: "Professional Annotation Editor",
+                    date_created: new Date().toISOString()
+                },
+                licenses: [],
+                images: [],
+                annotations: [],
+                categories: []
+            };
+            
+            // Add current image info
+            if (state.currentImage) {
+                cocoData.images.push({
+                    id: 1,
+                    width: state.currentImage.width,
+                    height: state.currentImage.height,
+                    file_name: state.matchedPairs[state.currentIndex].imageName,
+                    license: 0,
+                    flickr_url: "",
+                    coco_url: "",
+                    date_captured: new Date().toISOString()
+                });
+            }
+            
+            // Convert annotations
+            if (data.annotations) {
+                // Already COCO format annotations
+                cocoData.annotations = data.annotations.map((ann, index) => ({
+                    ...ann,
+                    id: ann.id || index + 1,
+                    image_id: 1,
+                    category_id: ann.category_id || 1,
+                    iscrowd: ann.iscrowd || 0
+                }));
+            } else if (data.shapes) {
+                // Convert from LabelMe format
+                cocoData.annotations = data.shapes.map((shape, index) => {
+                    const flatPoints = shape.points.flat();
+                    return {
+                        id: index + 1,
+                        image_id: 1,
+                        category_id: 1,
+                        segmentation: [flatPoints],
+                        area: calculatePolygonArea(flatPoints),
+                        bbox: calculateBoundingBox(flatPoints),
+                        iscrowd: 0
+                    };
+                });
+            }
+            
+            // Add default category
+            cocoData.categories.push({
+                id: 1,
+                name: "object",
+                supercategory: "thing"
+            });
+            
+            return cocoData;
+        }
+        
+        // Calculate polygon area
+        function calculatePolygonArea(points) {
+            let area = 0;
+            const n = points.length / 2;
+            
+            for (let i = 0; i < n; i++) {
+                const j = (i + 1) % n;
+                area += points[i * 2] * points[j * 2 + 1];
+                area -= points[j * 2] * points[i * 2 + 1];
+            }
+            
+            return Math.abs(area) / 2;
+        }
+        
+        // Calculate bounding box from points
+        function calculateBoundingBox(points) {
+            let minX = Infinity, minY = Infinity;
+            let maxX = -Infinity, maxY = -Infinity;
+            
+            for (let i = 0; i < points.length; i += 2) {
+                minX = Math.min(minX, points[i]);
+                maxX = Math.max(maxX, points[i]);
+                minY = Math.min(minY, points[i + 1]);
+                maxY = Math.max(maxY, points[i + 1]);
+            }
+            
+            return [minX, minY, maxX - minX, maxY - minY];
+        }
+
+        // Initialize application when DOM is loaded
         document.addEventListener('DOMContentLoaded', initApp);
     </script>
 </body>
