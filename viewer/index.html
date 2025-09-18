@@ -984,14 +984,11 @@
             state.canvas.width = image.width * scale;
             state.canvas.height = image.height * scale;
 
-            // Reset zoom and pan
-            state.zoomLevel = 1;
-            state.panX = 0;
-            state.panY = 0;
-
             // Draw image
             state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
             state.ctx.drawImage(image, 0, 0, state.canvas.width, state.canvas.height);
+            // Reapply current transform so view is preserved across operations
+            applyTransform();
         }
 
         // Load label JSON file
@@ -1172,6 +1169,8 @@
             state.selectedPolygon = null;
             state.selectedVertex = null;
             state.modifiedData = null;
+            state.multiSelectedPolygons = [];
+            state.multiSelectedVertices = [];
             
             state.currentIndex = (state.currentIndex - 1 + state.matchedPairs.length) % state.matchedPairs.length;
             showCurrentImage();
@@ -1184,6 +1183,8 @@
             state.selectedPolygon = null;
             state.selectedVertex = null;
             state.modifiedData = null;
+            state.multiSelectedPolygons = [];
+            state.multiSelectedVertices = [];
             
             state.currentIndex = (state.currentIndex + 1) % state.matchedPairs.length;
             showCurrentImage();
@@ -1246,9 +1247,7 @@
         function handleCanvasContextMenu(event) {
             if (!state.isEditMode) return;
             event.preventDefault();
-            const rect = state.canvas.getBoundingClientRect();
-            const x = (event.clientX - rect.left) / state.zoomLevel;
-            const y = (event.clientY - rect.top) / state.zoomLevel;
+            const { x, y } = getCanvasCoordsFromEvent(event);
             const vertex = findVertexAtPoint(x, y);
             if (vertex) {
                 state.selectedVertex = vertex;
@@ -1261,6 +1260,20 @@
             // Zoom centered around canvas center for stability
             state.zoomLevel *= factor;
             state.zoomLevel = Math.max(0.1, Math.min(8, state.zoomLevel));
+            applyTransform();
+        }
+
+        // Zoom keeping the cursor position stationary relative to image
+        function zoomAtCursor(event, factor) {
+            const prevZoom = state.zoomLevel;
+            const { x, y } = getCanvasCoordsFromEvent(event);
+            state.zoomLevel = Math.max(0.1, Math.min(8, state.zoomLevel * factor));
+            const newZoom = state.zoomLevel;
+            const rect = state.canvas.getBoundingClientRect();
+            const cursorClientX = event.clientX - rect.left;
+            const cursorClientY = event.clientY - rect.top;
+            state.panX = cursorClientX - x * newZoom;
+            state.panY = cursorClientY - y * newZoom;
             applyTransform();
         }
 
@@ -1278,17 +1291,22 @@
         }
 
         // Mouse event handlers - ENHANCED FOR POLYGON EDITING
+        function getCanvasCoordsFromEvent(event) {
+            const rect = state.canvas.getBoundingClientRect();
+            // rect already includes CSS transform translate/scale; only divide by zoom
+            const x = (event.clientX - rect.left) / state.zoomLevel;
+            const y = (event.clientY - rect.top) / state.zoomLevel;
+            return { x, y };
+        }
         function handleMouseWheel(event) {
             event.preventDefault();
             const factor = event.deltaY > 0 ? 0.9 : 1.1;
-            zoomImage(factor);
+            zoomAtCursor(event, factor);
         }
 
         function handleMouseDown(event) {
             if (state.isEditMode) {
-                const rect = state.canvas.getBoundingClientRect();
-                const x = (event.clientX - rect.left) / state.zoomLevel;
-                const y = (event.clientY - rect.top) / state.zoomLevel;
+                const { x, y } = getCanvasCoordsFromEvent(event);
                 // Check if clicking on a vertex
                 const vertex = findVertexAtPoint(x, y);
                 if (vertex) {
@@ -1308,6 +1326,7 @@
                     state.selectedVertex = null;
                     // Keep current polygon selection; do not clear it here
                     state.multiSelectedPolygons = [];
+                    state.multiSelectedVertices = [];
                     renderScene();
                     return; // do not start pan
                 }
@@ -1323,18 +1342,14 @@
         function handleMouseMove(event) {
             if (state.isDraggingVertex && state.selectedVertex) {
                 // Move vertex
-                const rect = state.canvas.getBoundingClientRect();
-                const x = (event.clientX - rect.left) / state.zoomLevel;
-                const y = (event.clientY - rect.top) / state.zoomLevel;
+                const { x, y } = getCanvasCoordsFromEvent(event);
                 
                 moveVertex(state.selectedVertex, x, y);
                 renderScene();
                 return;
             }
             if (state.isEditMode && state.isMarqueeSelecting && state.marqueeStart && state.currentImage) {
-                const rect = state.canvas.getBoundingClientRect();
-                const x = (event.clientX - rect.left) / state.zoomLevel;
-                const y = (event.clientY - rect.top) / state.zoomLevel;
+                const { x, y } = getCanvasCoordsFromEvent(event);
                 const scaleX = state.canvas.width / state.currentImage.width;
                 const scaleY = state.canvas.height / state.currentImage.height;
                 state.marqueeEnd = { x: x / scaleX, y: y / scaleY };
@@ -1575,6 +1590,8 @@
             state.isEditMode = !state.isEditMode;
             state.selectedPolygon = null;
             state.selectedVertex = null;
+            state.multiSelectedPolygons = [];
+            state.multiSelectedVertices = [];
             updateEditModeUI();
             
             // Update canvas cursor
@@ -1582,7 +1599,7 @@
             
             // Redraw to update UI
             if (state.currentImage && state.matchedPairs.length > 0) {
-                showCurrentImage();
+                renderScene();
             }
         }
         
@@ -1610,9 +1627,7 @@
         function handleCanvasClick(event) {
             if (!state.isEditMode || state.matchedPairs.length === 0) return;
             
-            const rect = state.canvas.getBoundingClientRect();
-            const x = (event.clientX - rect.left) / state.zoomLevel;
-            const y = (event.clientY - rect.top) / state.zoomLevel;
+            const { x, y } = getCanvasCoordsFromEvent(event);
             
             // If currently adding polygon, handle point add
             if (state.addingPolygon) {
@@ -1943,6 +1958,7 @@
                         state.selectedPolygon = { shapeIndex: item.index };
                     }
                     state.multiSelectedPolygons = [];
+                    state.multiSelectedVertices = [];
                     renderScene();
                     renderPolygonList();
                 });
@@ -2197,39 +2213,78 @@
 
         function deleteMultiSelectedVertices() {
             if (!state.modifiedData || !state.multiSelectedVertices || state.multiSelectedVertices.length === 0) return;
-            // Group deletions per polygon/segmentation and delete from highest index to lowest
-            const verts = [...state.multiSelectedVertices];
             let deletedPolygons = 0;
-            // Sort by pointIndex desc for COCO or vertexIndex desc for LabelMe
-            verts.sort((a, b) => {
-                const ai = (a.pointIndex !== undefined) ? a.pointIndex : a.vertexIndex;
-                const bi = (b.pointIndex !== undefined) ? b.pointIndex : b.vertexIndex;
-                return bi - ai;
-            });
-            verts.forEach(v => {
-                if (v.annotationIndex !== undefined) {
-                    const ann = state.modifiedData.annotations[v.annotationIndex];
-                    if (!ann || !ann.segmentation || !ann.segmentation[v.segmentationIndex]) return;
-                    const seg = ann.segmentation[v.segmentationIndex];
-                    if (v.pointIndex < 0 || v.pointIndex + 1 >= seg.length) return;
-                    seg.splice(v.pointIndex, 2);
-                    if (seg.length < 6) {
-                        ann.segmentation.splice(v.segmentationIndex, 1);
-                        if (ann.segmentation.length === 0) {
-                            state.modifiedData.annotations.splice(v.annotationIndex, 1);
-                            deletedPolygons++;
+            // Split by format
+            const cocoVerts = state.multiSelectedVertices.filter(v => v.annotationIndex !== undefined);
+            const labelVerts = state.multiSelectedVertices.filter(v => v.shapeIndex !== undefined);
+
+            // Handle COCO: group by annotationIndex -> segmentationIndex
+            if (cocoVerts.length && state.modifiedData.annotations) {
+                const byAnn = new Map();
+                cocoVerts.forEach(v => {
+                    if (!byAnn.has(v.annotationIndex)) byAnn.set(v.annotationIndex, new Map());
+                    const bySeg = byAnn.get(v.annotationIndex);
+                    if (!bySeg.has(v.segmentationIndex)) bySeg.set(v.segmentationIndex, []);
+                    bySeg.get(v.segmentationIndex).push(v.pointIndex);
+                });
+                // Process annotations in descending order to avoid shifting indices
+                const annIndices = Array.from(byAnn.keys()).sort((a,b) => b - a);
+                annIndices.forEach(annIdx => {
+                    const ann = state.modifiedData.annotations[annIdx];
+                    if (!ann || !ann.segmentation) return;
+                    const bySeg = byAnn.get(annIdx);
+                    // Delete points per segmentation (point indices descending)
+                    const segIndices = Array.from(bySeg.keys()).sort((a,b) => b - a);
+                    const segsToRemove = [];
+                    segIndices.forEach(segIdx => {
+                        const seg = ann.segmentation[segIdx];
+                        if (!seg) return;
+                        const pts = Array.from(new Set(bySeg.get(segIdx))).sort((a,b) => b - a);
+                        pts.forEach(ptIdx => {
+                            if (ptIdx >= 0 && ptIdx + 1 < seg.length) {
+                                seg.splice(ptIdx, 2);
+                            }
+                        });
+                        if (seg.length < 6) {
+                            segsToRemove.push(segIdx);
                         }
-                    }
-                } else if (v.shapeIndex !== undefined) {
-                    const sh = state.modifiedData.shapes[v.shapeIndex];
-                    if (!sh || !sh.points || v.vertexIndex < 0 || v.vertexIndex >= sh.points.length) return;
-                    sh.points.splice(v.vertexIndex, 1);
-                    if (sh.points.length < 3) {
-                        state.modifiedData.shapes.splice(v.shapeIndex, 1);
+                    });
+                    // Remove emptied segmentations in descending order
+                    segsToRemove.sort((a,b) => b - a).forEach(segIdx => {
+                        if (ann.segmentation && segIdx >= 0 && segIdx < ann.segmentation.length) {
+                            ann.segmentation.splice(segIdx, 1);
+                        }
+                    });
+                    // If no segmentations remain, remove the whole annotation
+                    if (!ann.segmentation || ann.segmentation.length === 0) {
+                        state.modifiedData.annotations.splice(annIdx, 1);
                         deletedPolygons++;
                     }
-                }
-            });
+                });
+            }
+
+            // Handle LabelMe: group by shapeIndex and delete vertices in descending order
+            if (labelVerts.length && state.modifiedData.shapes) {
+                const byShape = new Map();
+                labelVerts.forEach(v => {
+                    if (!byShape.has(v.shapeIndex)) byShape.set(v.shapeIndex, []);
+                    byShape.get(v.shapeIndex).push(v.vertexIndex);
+                });
+                const shapeIndices = Array.from(byShape.keys()).sort((a,b) => b - a);
+                shapeIndices.forEach(shapeIdx => {
+                    const sh = state.modifiedData.shapes[shapeIdx];
+                    if (!sh || !sh.points) return;
+                    const vertsDesc = Array.from(new Set(byShape.get(shapeIdx))).sort((a,b) => b - a);
+                    vertsDesc.forEach(vi => {
+                        if (vi >= 0 && vi < sh.points.length) sh.points.splice(vi, 1);
+                    });
+                    if (sh.points.length < 3) {
+                        state.modifiedData.shapes.splice(shapeIdx, 1);
+                        deletedPolygons++;
+                    }
+                });
+            }
+
             state.selectedVertex = null;
             state.multiSelectedVertices = [];
             if (deletedPolygons > 0) state.selectedPolygon = null;
