@@ -681,6 +681,11 @@
                 this.addingPolygon = false; // Adding new polygon mode
                 this.newPolygonPoints = []; // Points in image coords when adding
                 this.showOnlySelected = false; // Filter rendering to selected only
+                this.isMarqueeSelecting = false; // Drag-select mode
+                this.marqueeStart = null; // {x,y} in image coords
+                this.marqueeEnd = null;   // {x,y} in image coords
+                this.multiSelectedPolygons = []; // Array of selected polygon refs
+                this.multiSelectedVertices = []; // Selected vertices for current polygon
             }
         }
 
@@ -1036,8 +1041,9 @@
                 const color = POLYGON_COLORS[index % POLYGON_COLORS.length];
                 
                 // Check if this polygon is selected
-                const isSelected = state.selectedPolygon && 
-                    state.selectedPolygon.annotationIndex === index;
+                const isSelected = (state.selectedPolygon && 
+                    state.selectedPolygon.annotationIndex === index) ||
+                    isItemInMultiSelection({ type: 'coco', index });
                 const polygonColor = isSelected ? '#FFFFFF' : color;
 
                 // Draw segmentation polygons ONLY - NO BOUNDING BOXES
@@ -1060,8 +1066,9 @@
                 const color = POLYGON_COLORS[index % POLYGON_COLORS.length];
                 
                 // Check if this polygon is selected
-                const isSelected = state.selectedPolygon && 
-                    state.selectedPolygon.shapeIndex === index;
+                const isSelected = (state.selectedPolygon && 
+                    state.selectedPolygon.shapeIndex === index) ||
+                    isItemInMultiSelection({ type: 'labelme', index });
                 const polygonColor = isSelected ? '#FFFFFF' : color;
 
                 if (shape.shape_type === 'polygon' && shape.points && Array.isArray(shape.points)) {
@@ -1140,13 +1147,16 @@
                     state.selectedVertex.annotationIndex === annotationIndex &&
                     state.selectedVertex.segmentationIndex === segmentationIndex &&
                     state.selectedVertex.vertexIndex === i / 2;
+                const isInMultiVertex = state.multiSelectedVertices && state.multiSelectedVertices.some(v =>
+                    v.annotationIndex === annotationIndex && v.segmentationIndex === segmentationIndex && v.vertexIndex === i / 2
+                );
                 
-                state.ctx.fillStyle = isVertexSelected ? '#FF3B30' : '#FFFFFF';
+                state.ctx.fillStyle = isVertexSelected ? '#FF3B30' : (isInMultiVertex ? '#64D2FF' : '#FFFFFF');
                 state.ctx.strokeStyle = '#000000';
                 state.ctx.lineWidth = 2;
                 
                 state.ctx.beginPath();
-                state.ctx.arc(x, y, isVertexSelected ? 6 : 4, 0, 2 * Math.PI);
+                state.ctx.arc(x, y, (isVertexSelected || isInMultiVertex) ? 6 : 4, 0, 2 * Math.PI);
                 state.ctx.fill();
                 state.ctx.stroke();
             }
@@ -1203,6 +1213,11 @@
                     if (state.isEditMode) {
                         state.selectedPolygon = null;
                         state.selectedVertex = null;
+                        state.multiSelectedPolygons = [];
+                        state.multiSelectedVertices = [];
+                        state.isMarqueeSelecting = false;
+                        state.marqueeStart = null;
+                        state.marqueeEnd = null;
                         showCurrentImage();
                     }
                     break;
@@ -1213,9 +1228,19 @@
         function handleVertexDeletionKeys(event) {
             if (!state.isEditMode) return;
             if (event.key !== 'Delete' && event.key !== 'Backspace') return;
-            if (!state.selectedVertex) return;
             event.preventDefault();
-            deleteSelectedVertex();
+            if (state.selectedVertex) {
+                deleteSelectedVertex();
+                return;
+            }
+            if (state.multiSelectedPolygons && state.multiSelectedPolygons.length > 0) {
+                deleteMultiSelectedPolygons();
+                return;
+            }
+            if (state.multiSelectedVertices && state.multiSelectedVertices.length > 0) {
+                deleteMultiSelectedVertices();
+                return;
+            }
         }
 
         function handleCanvasContextMenu(event) {
@@ -1264,7 +1289,6 @@
                 const rect = state.canvas.getBoundingClientRect();
                 const x = (event.clientX - rect.left) / state.zoomLevel;
                 const y = (event.clientY - rect.top) / state.zoomLevel;
-                
                 // Check if clicking on a vertex
                 const vertex = findVertexAtPoint(x, y);
                 if (vertex) {
@@ -1272,6 +1296,20 @@
                     state.isDraggingVertex = true;
                     renderScene();
                     return;
+                }
+
+                // Shift+drag starts marquee selection in image coordinates (only if not on a vertex)
+                if (event.shiftKey && state.currentImage) {
+                    const scaleX = state.canvas.width / state.currentImage.width;
+                    const scaleY = state.canvas.height / state.currentImage.height;
+                    state.isMarqueeSelecting = true;
+                    state.marqueeStart = { x: x / scaleX, y: y / scaleY };
+                    state.marqueeEnd = { x: x / scaleX, y: y / scaleY };
+                    state.selectedVertex = null;
+                    // Keep current polygon selection; do not clear it here
+                    state.multiSelectedPolygons = [];
+                    renderScene();
+                    return; // do not start pan
                 }
             }
             
@@ -1293,6 +1331,16 @@
                 renderScene();
                 return;
             }
+            if (state.isEditMode && state.isMarqueeSelecting && state.marqueeStart && state.currentImage) {
+                const rect = state.canvas.getBoundingClientRect();
+                const x = (event.clientX - rect.left) / state.zoomLevel;
+                const y = (event.clientY - rect.top) / state.zoomLevel;
+                const scaleX = state.canvas.width / state.currentImage.width;
+                const scaleY = state.canvas.height / state.currentImage.height;
+                state.marqueeEnd = { x: x / scaleX, y: y / scaleY };
+                renderScene();
+                return;
+            }
             
             if (!state.isDragging) return;
 
@@ -1309,6 +1357,13 @@
         }
 
         function handleMouseUp() {
+            if (state.isEditMode && state.isMarqueeSelecting && state.marqueeStart && state.marqueeEnd) {
+                performMarqueeSelection();
+                state.isMarqueeSelecting = false;
+                state.marqueeStart = null;
+                state.marqueeEnd = null;
+                renderScene();
+            }
             state.isDragging = false;
             state.isDraggingVertex = false;
             state.canvas.style.cursor = state.isEditMode ? 'crosshair' : 'grab';
@@ -1439,6 +1494,7 @@
                 return;
             }
             state.selectedVertex = null;
+            state.multiSelectedVertices = [];
             if (deletedPolygon) {
                 state.selectedPolygon = null;
             }
@@ -1800,6 +1856,27 @@
                 }
                 state.ctx.restore();
             }
+            // Marquee overlay
+            if (state.isMarqueeSelecting && state.marqueeStart && state.marqueeEnd) {
+                const scaleX = state.canvas.width / state.currentImage.width;
+                const scaleY = state.canvas.height / state.currentImage.height;
+                const x1 = state.marqueeStart.x * scaleX;
+                const y1 = state.marqueeStart.y * scaleY;
+                const x2 = state.marqueeEnd.x * scaleX;
+                const y2 = state.marqueeEnd.y * scaleY;
+                const left = Math.min(x1, x2);
+                const top = Math.min(y1, y2);
+                const width = Math.abs(x2 - x1);
+                const height = Math.abs(y2 - y1);
+                state.ctx.save();
+                state.ctx.strokeStyle = '#64D2FF';
+                state.ctx.fillStyle = '#64D2FF55';
+                state.ctx.lineWidth = 2;
+                state.ctx.setLineDash([6, 4]);
+                state.ctx.strokeRect(left, top, width, height);
+                state.ctx.fillRect(left, top, width, height);
+                state.ctx.restore();
+            }
         }
 
         // Polygon list render and interactions
@@ -1819,7 +1896,9 @@
             }
             items.forEach(item => {
                 const div = document.createElement('div');
-                div.className = 'polygon-item' + ((state.selectedPolygon && ((item.type === 'coco' && state.selectedPolygon.annotationIndex === item.index) || (item.type === 'labelme' && state.selectedPolygon.shapeIndex === item.index))) ? ' selected' : '');
+                const isMultiSelected = isItemInMultiSelection(item);
+                const isSingleSelected = (state.selectedPolygon && ((item.type === 'coco' && state.selectedPolygon.annotationIndex === item.index) || (item.type === 'labelme' && state.selectedPolygon.shapeIndex === item.index)));
+                div.className = 'polygon-item' + ((isSingleSelected || isMultiSelected) ? ' selected' : '');
                 const meta = document.createElement('div');
                 meta.className = 'meta';
                 const dot = document.createElement('div');
@@ -1863,6 +1942,7 @@
                     } else {
                         state.selectedPolygon = { shapeIndex: item.index };
                     }
+                    state.multiSelectedPolygons = [];
                     renderScene();
                     renderPolygonList();
                 });
@@ -1880,6 +1960,8 @@
             }
             state.selectedPolygon = null;
             state.showOnlySelected = false;
+            state.multiSelectedPolygons = [];
+            state.multiSelectedVertices = [];
             displayLabelContent(state.modifiedData);
             renderScene();
             renderPolygonList();
@@ -1894,6 +1976,8 @@
             state.addingPolygon = true;
             state.newPolygonPoints = [];
             state.selectedPolygon = null;
+            state.multiSelectedPolygons = [];
+            state.multiSelectedVertices = [];
             state.showOnlySelected = false;
             renderScene();
             showStatus('Adding polygon: click to add points, Enter/dblclick to finish, Esc to cancel', 'success');
@@ -1984,6 +2068,176 @@
             document.removeEventListener('keydown', handleAddPolygonKeys);
             elements.canvas.removeEventListener('dblclick', finishAddingPolygonOnce);
             showStatus('Cancelled adding polygon', 'warning');
+        }
+        
+        // Helpers for marquee selection and multi-delete
+        function performMarqueeSelection() {
+            if (!state.modifiedData || !state.currentImage || !state.marqueeStart || !state.marqueeEnd) return;
+            const rect = normalizeRect(state.marqueeStart, state.marqueeEnd);
+            // If a single polygon is selected, select vertices within rect
+            const hasSingleSelection = !!state.selectedPolygon && !(state.multiSelectedPolygons && state.multiSelectedPolygons.length);
+            if (hasSingleSelection) {
+                const verts = getVerticesInRectForSelectedPolygon(rect);
+                state.multiSelectedVertices = verts;
+                if (verts.length > 0) {
+                    showStatus(`Selected ${verts.length} point(s)`, 'success');
+                } else {
+                    showStatus('No points in selection', 'warning');
+                }
+            } else {
+                // Otherwise select polygons by rect
+                const selected = [];
+                if (state.modifiedData.annotations) {
+                    state.modifiedData.annotations.forEach((ann, idx) => {
+                        if (!ann.segmentation) return;
+                        const anyInside = ann.segmentation.some(seg => polygonAnyVertexInsideRect(seg, rect));
+                        if (anyInside) selected.push({ type: 'coco', index: idx });
+                    });
+                } else if (state.modifiedData.shapes) {
+                    state.modifiedData.shapes.forEach((sh, idx) => {
+                        if (sh.shape_type !== 'polygon' || !sh.points) return;
+                        const flat = sh.points.flat();
+                        if (polygonAnyVertexInsideRect(flat, rect)) selected.push({ type: 'labelme', index: idx });
+                    });
+                }
+                state.multiSelectedPolygons = selected;
+                state.multiSelectedVertices = [];
+                if (selected.length > 0) {
+                    showStatus(`Selected ${selected.length} polygon(s)`, 'success');
+                } else {
+                    showStatus('No polygons in selection', 'warning');
+                }
+                renderPolygonList();
+            }
+        }
+
+        function getVerticesInRectForSelectedPolygon(rectImg) {
+            const verts = [];
+            if (state.modifiedData.annotations && state.selectedPolygon.annotationIndex !== undefined) {
+                const ann = state.modifiedData.annotations[state.selectedPolygon.annotationIndex];
+                if (!ann || !ann.segmentation) return verts;
+                ann.segmentation.forEach((seg, segIndex) => {
+                    for (let i = 0; i < seg.length; i += 2) {
+                        const x = seg[i];
+                        const y = seg[i + 1];
+                        if (x >= rectImg.left && x <= rectImg.right && y >= rectImg.top && y <= rectImg.bottom) {
+                            verts.push({ annotationIndex: state.selectedPolygon.annotationIndex, segmentationIndex: segIndex, vertexIndex: i / 2, pointIndex: i });
+                        }
+                    }
+                });
+            } else if (state.modifiedData.shapes && state.selectedPolygon.shapeIndex !== undefined) {
+                const sh = state.modifiedData.shapes[state.selectedPolygon.shapeIndex];
+                if (!sh || !sh.points) return verts;
+                for (let i = 0; i < sh.points.length; i++) {
+                    const x = sh.points[i][0];
+                    const y = sh.points[i][1];
+                    if (x >= rectImg.left && x <= rectImg.right && y >= rectImg.top && y <= rectImg.bottom) {
+                        verts.push({ shapeIndex: state.selectedPolygon.shapeIndex, vertexIndex: i });
+                    }
+                }
+            }
+            return verts;
+        }
+
+        function normalizeRect(a, b) {
+            return {
+                left: Math.min(a.x, b.x),
+                right: Math.max(a.x, b.x),
+                top: Math.min(a.y, b.y),
+                bottom: Math.max(a.y, b.y)
+            };
+        }
+
+        function polygonAnyVertexInsideRect(points, rectImg) {
+            for (let i = 0; i < points.length; i += 2) {
+                const x = points[i];
+                const y = points[i + 1];
+                if (x >= rectImg.left && x <= rectImg.right && y >= rectImg.top && y <= rectImg.bottom) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function isItemInMultiSelection(item) {
+            if (!state.multiSelectedPolygons) return false;
+            return state.multiSelectedPolygons.some(sel => sel.type === item.type && sel.index === item.index);
+        }
+
+        function deleteMultiSelectedPolygons() {
+            if (!state.modifiedData || !state.multiSelectedPolygons || state.multiSelectedPolygons.length === 0) return;
+            const toDeleteCoco = state.multiSelectedPolygons.filter(s => s.type === 'coco').map(s => s.index).sort((a,b)=>b-a);
+            const toDeleteLabel = state.multiSelectedPolygons.filter(s => s.type === 'labelme').map(s => s.index).sort((a,b)=>b-a);
+            let count = 0;
+            if (state.modifiedData.annotations && toDeleteCoco.length) {
+                toDeleteCoco.forEach(idx => {
+                    if (idx >= 0 && idx < state.modifiedData.annotations.length) {
+                        state.modifiedData.annotations.splice(idx, 1);
+                        count++;
+                    }
+                });
+            }
+            if (state.modifiedData.shapes && toDeleteLabel.length) {
+                toDeleteLabel.forEach(idx => {
+                    if (idx >= 0 && idx < state.modifiedData.shapes.length) {
+                        state.modifiedData.shapes.splice(idx, 1);
+                        count++;
+                    }
+                });
+            }
+            state.selectedPolygon = null;
+            state.multiSelectedPolygons = [];
+            state.multiSelectedVertices = [];
+            displayLabelContent(state.modifiedData);
+            renderScene();
+            renderPolygonList();
+            updateExportButtonState();
+            showStatus(`Deleted ${count} polygon(s)`, 'success');
+        }
+
+        function deleteMultiSelectedVertices() {
+            if (!state.modifiedData || !state.multiSelectedVertices || state.multiSelectedVertices.length === 0) return;
+            // Group deletions per polygon/segmentation and delete from highest index to lowest
+            const verts = [...state.multiSelectedVertices];
+            let deletedPolygons = 0;
+            // Sort by pointIndex desc for COCO or vertexIndex desc for LabelMe
+            verts.sort((a, b) => {
+                const ai = (a.pointIndex !== undefined) ? a.pointIndex : a.vertexIndex;
+                const bi = (b.pointIndex !== undefined) ? b.pointIndex : b.vertexIndex;
+                return bi - ai;
+            });
+            verts.forEach(v => {
+                if (v.annotationIndex !== undefined) {
+                    const ann = state.modifiedData.annotations[v.annotationIndex];
+                    if (!ann || !ann.segmentation || !ann.segmentation[v.segmentationIndex]) return;
+                    const seg = ann.segmentation[v.segmentationIndex];
+                    if (v.pointIndex < 0 || v.pointIndex + 1 >= seg.length) return;
+                    seg.splice(v.pointIndex, 2);
+                    if (seg.length < 6) {
+                        ann.segmentation.splice(v.segmentationIndex, 1);
+                        if (ann.segmentation.length === 0) {
+                            state.modifiedData.annotations.splice(v.annotationIndex, 1);
+                            deletedPolygons++;
+                        }
+                    }
+                } else if (v.shapeIndex !== undefined) {
+                    const sh = state.modifiedData.shapes[v.shapeIndex];
+                    if (!sh || !sh.points || v.vertexIndex < 0 || v.vertexIndex >= sh.points.length) return;
+                    sh.points.splice(v.vertexIndex, 1);
+                    if (sh.points.length < 3) {
+                        state.modifiedData.shapes.splice(v.shapeIndex, 1);
+                        deletedPolygons++;
+                    }
+                }
+            });
+            state.selectedVertex = null;
+            state.multiSelectedVertices = [];
+            if (deletedPolygons > 0) state.selectedPolygon = null;
+            displayLabelContent(state.modifiedData);
+            updateExportButtonState();
+            renderScene();
+            renderPolygonList();
+            showStatus(deletedPolygons > 0 ? `Deleted ${deletedPolygons} polygon(s)` : 'Deleted selected point(s)', 'success');
         }
         // Initialize application when DOM is loaded
         document.addEventListener('DOMContentLoaded', initApp);
