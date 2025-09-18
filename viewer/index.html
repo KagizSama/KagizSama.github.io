@@ -285,7 +285,8 @@
             max-width: 100%;
             max-height: 100%;
             cursor: grab;
-            transition: transform 0.1s ease;
+            transition: transform 80ms ease-out;
+            will-change: transform;
         }
 
         #imageCanvas:active {
@@ -686,6 +687,14 @@
                 this.marqueeEnd = null;   // {x,y} in image coords
                 this.multiSelectedPolygons = []; // Array of selected polygon refs
                 this.multiSelectedVertices = []; // Selected vertices for current polygon
+                // Smooth zoom animation state
+                this._zoomRafId = null;
+                this._zoomDesired = null;
+                this._zoomAnchor = null; // {canvasX, canvasY, clientX, clientY}
+                this.lastWheelTime = 0; // timestamp of last wheel event
+                this.wheelAnchor = null; // per-gesture zoom anchor { localX, localY, imageX, imageY }
+                this.labelCache = new Map(); // index -> deep-copied label data
+                this._showImageToken = 0; // guard token for async showCurrentImage
             }
         }
 
@@ -724,6 +733,7 @@
                 imageFolder: document.getElementById('imageFolder'),
                 labelFolder: document.getElementById('labelFolder'),
                 canvas: document.getElementById('imageCanvas'),
+                    imageContainer: document.querySelector('.image-container'),
                 currentIndex: document.getElementById('currentIndex'),
                 totalImages: document.getElementById('totalImages'),
                 currentLabelFile: document.getElementById('currentLabelFile'),
@@ -783,8 +793,9 @@
             elements.zoomOut.addEventListener('click', () => zoomImage(0.8));
             elements.resetZoom.addEventListener('click', resetZoom);
 
-            // Canvas mouse events for pan, zoom, and editing
-            elements.canvas.addEventListener('wheel', handleMouseWheel);
+            // Mouse wheel zoom can be triggered anywhere in the container (even outside image)
+            elements.imageContainer.addEventListener('wheel', handleMouseWheel, { passive: false });
+            // Canvas mouse events for pan and editing
             elements.canvas.addEventListener('mousedown', handleMouseDown);
             elements.canvas.addEventListener('mousemove', handleMouseMove);
             elements.canvas.addEventListener('mouseup', handleMouseUp);
@@ -909,6 +920,7 @@
         async function showCurrentImage() {
             if (state.matchedPairs.length === 0) return;
 
+            const token = ++state._showImageToken;
             const currentPair = state.matchedPairs[state.currentIndex];
             
             // Update UI info
@@ -921,6 +933,7 @@
                 // Load image
                 const imageUrl = URL.createObjectURL(currentPair.image);
                 const image = await loadImage(imageUrl);
+                if (token !== state._showImageToken) { URL.revokeObjectURL(imageUrl); return; }
                 state.currentImage = image;
 
                 // Draw image on canvas (set canvas size, reset transforms)
@@ -928,13 +941,19 @@
 
                 // Load and draw annotations if available
                 if (currentPair.label) {
-                    const labelData = await loadLabelFile(currentPair.label);
+                    // Use cached label if present
+                    let labelData;
+                    if (state.labelCache.has(state.currentIndex)) {
+                        labelData = JSON.parse(JSON.stringify(state.labelCache.get(state.currentIndex)));
+                    } else {
+                        labelData = await loadLabelFile(currentPair.label);
+                        if (token !== state._showImageToken) { URL.revokeObjectURL(imageUrl); return; }
+                        state.labelCache.set(state.currentIndex, JSON.parse(JSON.stringify(labelData)));
+                    }
                     // Store original data backup
                     state.originalData = JSON.parse(JSON.stringify(labelData));
-                    // Create modifiable copy if not exists
-                    if (!state.modifiedData) {
-                        state.modifiedData = JSON.parse(JSON.stringify(labelData));
-                    }
+                    // Always create fresh modifiable copy for current image from cache/label
+                    state.modifiedData = JSON.parse(JSON.stringify(labelData));
                     displayLabelContent(state.modifiedData || labelData);
                     renderScene();
                     renderPolygonList();
@@ -1265,17 +1284,55 @@
 
         // Zoom keeping the cursor position stationary relative to image
         function zoomAtCursor(event, factor) {
-            const prevZoom = state.zoomLevel;
-            const { x, y } = getCanvasCoordsFromEvent(event);
-            state.zoomLevel = Math.max(0.1, Math.min(8, state.zoomLevel * factor));
-            const newZoom = state.zoomLevel;
+            const prevZoom = state.zoomLevel > 0 ? state.zoomLevel : 1;
+            if (!isFinite(prevZoom)) return;
+            if (!state.canvas) return;
             const rect = state.canvas.getBoundingClientRect();
-            const cursorClientX = event.clientX - rect.left;
-            const cursorClientY = event.clientY - rect.top;
-            state.panX = cursorClientX - x * newZoom;
-            state.panY = cursorClientY - y * newZoom;
+            const localX = event.clientX - rect.left;
+            const localY = event.clientY - rect.top;
+            // Convert cursor to image coordinates using current pan/zoom
+            const imageX = (localX - state.panX) / prevZoom;
+            const imageY = (localY - state.panY) / prevZoom;
+            // Apply new zoom
+            const nextZoom = Math.max(0.1, Math.min(8, prevZoom * factor));
+            if (!isFinite(nextZoom)) return;
+            state.zoomLevel = nextZoom;
+            const newZoom = state.zoomLevel;
+            // Adjust pan so the same image point remains under the cursor
+            state.panX = localX - imageX * newZoom;
+            state.panY = localY - imageY * newZoom;
             applyTransform();
         }
+
+        // Per-gesture fixed anchor zoom: the first wheel position sets the anchor
+        function zoomAtFixedAnchor(event, factor) {
+            const now = performance.now();
+            const newGesture = (now - state.lastWheelTime) > 150; // if paused, new gesture
+            const rect = state.canvas.getBoundingClientRect();
+            const localX = event.clientX - rect.left;
+            const localY = event.clientY - rect.top;
+            if (newGesture || !state.wheelAnchor) {
+                const prevZoom = state.zoomLevel;
+                const imageX = (localX - state.panX) / prevZoom;
+                const imageY = (localY - state.panY) / prevZoom;
+                state.wheelAnchor = { localX, localY, imageX, imageY };
+            } else {
+                // Update local since canvas rect can move due to CSS transition
+                state.wheelAnchor.localX = localX;
+                state.wheelAnchor.localY = localY;
+            }
+            state.lastWheelTime = now;
+            // Apply zoom around the fixed anchor
+            const prevZoom = state.zoomLevel;
+            state.zoomLevel = Math.max(0.1, Math.min(8, state.zoomLevel * factor));
+            const newZoom = state.zoomLevel;
+            state.panX = state.wheelAnchor.localX - state.wheelAnchor.imageX * newZoom;
+            state.panY = state.wheelAnchor.localY - state.wheelAnchor.imageY * newZoom;
+            applyTransform();
+        }
+
+        // Single continuous zoom animator to avoid jitter
+        function queueZoomAtCursor(event, factorChange) { /* removed in favor of instant zoom */ }
 
         function resetZoom() {
             state.zoomLevel = 1;
@@ -1300,7 +1357,19 @@
         }
         function handleMouseWheel(event) {
             event.preventDefault();
-            const factor = event.deltaY > 0 ? 0.9 : 1.1;
+            if (!state.canvas || state.canvas.width === 0 || state.canvas.height === 0) return;
+            // Normalize wheel delta across devices
+            let deltaY = event.deltaY;
+            if (event.deltaMode === 1) { // lines
+                deltaY *= 15;
+            } else if (event.deltaMode === 2) { // pages
+                deltaY *= 800;
+            }
+            const clamped = Math.max(-300, Math.min(300, deltaY));
+            const base = event.ctrlKey ? 1.0010 : 1.0012; // gentler with ctrl/pinch
+            const factor = Math.pow(base, -clamped);
+            if (!isFinite(factor) || Math.abs(factor - 1) < 1e-6) return;
+            // Zoom precisely at current cursor each wheel event
             zoomAtCursor(event, factor);
         }
 
@@ -1469,6 +1538,8 @@
             
             // Update label display
             displayLabelContent(state.modifiedData);
+            // Persist edits to cache for current index
+            state.labelCache.set(state.currentIndex, JSON.parse(JSON.stringify(state.modifiedData)));
             updateExportButtonState();
         }
 
@@ -1514,6 +1585,7 @@
                 state.selectedPolygon = null;
             }
             displayLabelContent(state.modifiedData);
+            state.labelCache.set(state.currentIndex, JSON.parse(JSON.stringify(state.modifiedData)));
             updateExportButtonState();
             renderScene();
             renderPolygonList();
@@ -1974,6 +2046,8 @@
             } else if (state.modifiedData.shapes && item.type === 'labelme') {
                 state.modifiedData.shapes.splice(item.index, 1);
             }
+            // Persist edits to cache for current index
+            state.labelCache.set(state.currentIndex, JSON.parse(JSON.stringify(state.modifiedData)));
             state.selectedPolygon = null;
             state.showOnlySelected = false;
             state.multiSelectedPolygons = [];
@@ -2204,6 +2278,7 @@
             state.selectedPolygon = null;
             state.multiSelectedPolygons = [];
             state.multiSelectedVertices = [];
+            state.labelCache.set(state.currentIndex, JSON.parse(JSON.stringify(state.modifiedData)));
             displayLabelContent(state.modifiedData);
             renderScene();
             renderPolygonList();
@@ -2288,6 +2363,7 @@
             state.selectedVertex = null;
             state.multiSelectedVertices = [];
             if (deletedPolygons > 0) state.selectedPolygon = null;
+            state.labelCache.set(state.currentIndex, JSON.parse(JSON.stringify(state.modifiedData)));
             displayLabelContent(state.modifiedData);
             updateExportButtonState();
             renderScene();
